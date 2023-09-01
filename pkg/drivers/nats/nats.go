@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pkg/errors"
 	"net/url"
 	"os"
 	"os/signal"
@@ -152,15 +153,18 @@ func newBackend(ctx context.Context, connection string, tlsInfo tls.Config, lega
 		}
 
 		// Start the server.
-		go ns.Start()
+		//go ns.Start()
 		logrus.Infof("started embedded NATS server")
 
 		// Wait for the server to be ready.
 		// TODO: limit the number of retries?
-		for {
-			if ns.ReadyForConnections(5 * time.Second) {
-				break
-			}
+		//for {
+		//	if ns.ReadyForConnections(5 * time.Second) {
+		//		break
+		//	}
+		//}
+		if !ns.ReadyForConnections(30 * time.Second) {
+			return nil, fmt.Errorf("failed to connect to NATS server failed after 30s")
 		}
 
 		// TODO: No method on backend.Driver exists to indicate a shutdown.
@@ -192,8 +196,9 @@ func newBackend(ctx context.Context, connection string, tlsInfo tls.Config, lega
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
+retry:
 	bucket, err := js.KeyValue(config.bucket)
-	if err != nil && err == nats.ErrBucketNotFound {
+	if errors.Is(err, nats.ErrBucketNotFound) {
 		bucket, err = js.CreateKeyValue(
 			&nats.KeyValueConfig{
 				Bucket:      config.bucket,
@@ -201,13 +206,16 @@ func newBackend(ctx context.Context, connection string, tlsInfo tls.Config, lega
 				History:     config.revHistory,
 				Replicas:    config.replicas,
 			})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create kine kv bucket: %w", err)
+		}
+	} else if err != nil {
+		logrus.Errorf("lookup kine kv bucket: %v", err)
+		//return nil, fmt.Errorf("lookup kine kv bucket: %w", err)
+		goto retry
 	}
 
 	kvB := kv.NewEncodedKV(bucket, &kv.EtcdKeyCodec{}, &kv.S2ValueCodec{})
-
-	if err != nil {
-		return nil, err
-	}
 
 	return &Driver{
 		kv:            kvB,
